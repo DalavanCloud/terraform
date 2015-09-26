@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func TestAccAWSRouteTableAssociation(t *testing.T) {
+func TestAccAWSRouteTableAssociation_basic(t *testing.T) {
 	var v, v2 ec2.RouteTable
 
 	resource.Test(t, resource.TestCase{
@@ -48,7 +48,7 @@ func testAccCheckRouteTableAssociationDestroy(s *terraform.State) error {
 
 		// Try to find the resource
 		resp, err := conn.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
-			RouteTableIDs: []*string{aws.String(rs.Primary.Attributes["route_table_id"])},
+			RouteTableIds: []*string{aws.String(rs.Primary.Attributes["route_table_id"])},
 		})
 		if err != nil {
 			// Verify the error is what we want
@@ -65,7 +65,7 @@ func testAccCheckRouteTableAssociationDestroy(s *terraform.State) error {
 		rt := resp.RouteTables[0]
 		if len(rt.Associations) > 0 {
 			return fmt.Errorf(
-				"route table %s has associations", *rt.RouteTableID)
+				"route table %s has associations", *rt.RouteTableId)
 
 		}
 	}
@@ -86,7 +86,7 @@ func testAccCheckRouteTableAssociationExists(n string, v *ec2.RouteTable) resour
 
 		conn := testAccProvider.Meta().(*AWSClient).ec2conn
 		resp, err := conn.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
-			RouteTableIDs: []*string{aws.String(rs.Primary.Attributes["route_table_id"])},
+			RouteTableIds: []*string{aws.String(rs.Primary.Attributes["route_table_id"])},
 		})
 		if err != nil {
 			return err

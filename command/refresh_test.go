@@ -202,7 +202,7 @@ func TestRefresh_defaultState(t *testing.T) {
 		t.Fatalf("bad: %#v", actual)
 	}
 
-	f, err = os.Open(statePath + DefaultBackupExtention)
+	f, err = os.Open(statePath + DefaultBackupExtension)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -286,7 +286,7 @@ func TestRefresh_outPath(t *testing.T) {
 		t.Fatalf("bad: %#v", actual)
 	}
 
-	f, err = os.Open(outPath + DefaultBackupExtention)
+	f, err = os.Open(outPath + DefaultBackupExtension)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -575,9 +575,38 @@ func TestRefresh_disableBackup(t *testing.T) {
 	}
 
 	// Ensure there is no backup
-	_, err = os.Stat(outPath + DefaultBackupExtention)
+	_, err = os.Stat(outPath + DefaultBackupExtension)
 	if err == nil || !os.IsNotExist(err) {
 		t.Fatalf("backup should not exist")
+	}
+}
+
+func TestRefresh_displaysOutputs(t *testing.T) {
+	state := testState()
+	statePath := testStateFile(t, state)
+
+	p := testProvider()
+	ui := new(cli.MockUi)
+	c := &RefreshCommand{
+		Meta: Meta{
+			ContextOpts: testCtxConfig(p),
+			Ui:          ui,
+		},
+	}
+
+	args := []string{
+		"-state", statePath,
+		testFixturePath("refresh-output"),
+	}
+	if code := c.Run(args); code != 0 {
+		t.Fatalf("bad: %d\n\n%s", code, ui.ErrorWriter.String())
+	}
+
+	// Test that outputs were displayed
+	outputValue := "foo.example.com"
+	actual := ui.OutputWriter.String()
+	if !strings.Contains(actual, outputValue) {
+		t.Fatalf("Expected:\n%s\n\nTo include: %q", actual, outputValue)
 	}
 }
 

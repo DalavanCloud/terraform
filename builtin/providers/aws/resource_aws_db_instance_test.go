@@ -9,12 +9,12 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/rds"
 )
 
-func TestAccAWSDBInstance(t *testing.T) {
+func TestAccAWSDBInstance_basic(t *testing.T) {
 	var v rds.DBInstance
 
 	resource.Test(t, resource.TestCase{
@@ -176,12 +176,18 @@ resource "aws_db_instance" "bar" {
 	identifier = "foobarbaz-test-terraform-%d"
 
 	allocated_storage = 10
-	engine = "mysql"
+	engine = "MySQL"
 	engine_version = "5.6.21"
 	instance_class = "db.t1.micro"
 	name = "baz"
 	password = "barbarbarbar"
 	username = "foo"
+
+
+	# Maintenance Window is stored in lower case in the API, though not strictly 
+	# documented. Terraform will downcase this to match (as opposed to throw a 
+	# validation error).
+	maintenance_window = "Fri:09:00-Fri:09:30"
 
 	backup_retention_period = 0
 

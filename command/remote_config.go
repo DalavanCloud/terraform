@@ -295,7 +295,7 @@ func (c *RemoteConfigCommand) enableRemoteState() int {
 	if backupPath != "-" {
 		// Provide default backup path if none provided
 		if backupPath == "" {
-			backupPath = c.conf.statePath + DefaultBackupExtention
+			backupPath = c.conf.statePath + DefaultBackupExtension
 		}
 
 		log.Printf("[INFO] Writing backup state to: %s", backupPath)
@@ -367,6 +367,8 @@ Options:
 
   -state=path            Path to read state. Defaults to "terraform.tfstate"
                          unless remote state is enabled.
+
+  -no-color              If specified, output won't contain any color.
 
 `
 	return strings.TrimSpace(helpText)

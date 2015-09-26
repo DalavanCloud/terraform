@@ -5,9 +5,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/elasticache"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/elasticache"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -69,7 +69,7 @@ func resourceAwsElasticacheSecurityGroupCreate(d *schema.ResourceData, meta inte
 		_, err = conn.AuthorizeCacheSecurityGroupIngress(&elasticache.AuthorizeCacheSecurityGroupIngressInput{
 			CacheSecurityGroupName:  aws.String(name),
 			EC2SecurityGroupName:    aws.String(n),
-			EC2SecurityGroupOwnerID: aws.String(*res.CacheSecurityGroup.OwnerID),
+			EC2SecurityGroupOwnerId: aws.String(*res.CacheSecurityGroup.OwnerId),
 		})
 		if err != nil {
 			log.Printf("[ERROR] Failed to authorize: %v", err)

@@ -28,6 +28,12 @@ func resourceCloudStackIPAddress() *schema.Resource {
 				ForceNew: true,
 			},
 
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"ipaddress": &schema.Schema{
 				Type:     schema.TypeString,
 				Computed: true,
@@ -68,6 +74,17 @@ func resourceCloudStackIPAddressCreate(d *schema.ResourceData, meta interface{})
 		p.SetVpcid(vpcid)
 	}
 
+	// If there is a project supplied, we retrieve and set the project id
+	if project, ok := d.GetOk("project"); ok {
+		// Retrieve the project UUID
+		projectid, e := retrieveUUID(cs, "project", project.(string))
+		if e != nil {
+			return e.Error()
+		}
+		// Set the default project ID
+		p.SetProjectid(projectid)
+	}
+
 	// Associate a new IP address
 	r, err := cs.Address.AssociateIpAddress(p)
 	if err != nil {
@@ -105,7 +122,7 @@ func resourceCloudStackIPAddressRead(d *schema.ResourceData, meta interface{}) e
 			return err
 		}
 
-		d.Set("network", n.Name)
+		setValueOrUUID(d, "network", n.Name, f.Associatednetworkid)
 	}
 
 	if _, ok := d.GetOk("vpc"); ok {
@@ -115,8 +132,10 @@ func resourceCloudStackIPAddressRead(d *schema.ResourceData, meta interface{}) e
 			return err
 		}
 
-		d.Set("vpc", v.Name)
+		setValueOrUUID(d, "vpc", v.Name, f.Vpcid)
 	}
+
+	setValueOrUUID(d, "project", f.Project, f.Projectid)
 
 	return nil
 }
@@ -136,7 +155,7 @@ func resourceCloudStackIPAddressDelete(d *schema.ResourceData, meta interface{})
 			return nil
 		}
 
-		return fmt.Errorf("Error deleting network ACL list %s: %s", d.Get("name").(string), err)
+		return fmt.Errorf("Error disassociating IP address %s: %s", d.Get("name").(string), err)
 	}
 
 	return nil

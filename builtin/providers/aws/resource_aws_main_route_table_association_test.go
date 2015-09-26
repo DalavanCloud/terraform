@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func TestAccAWSMainRouteTableAssociation(t *testing.T) {
+func TestAccAWSMainRouteTableAssociation_basic(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
@@ -71,9 +71,9 @@ func testAccCheckMainRouteTableAssociation(
 			return err
 		}
 
-		if *mainAssociation.RouteTableAssociationID != rs.Primary.ID {
+		if *mainAssociation.RouteTableAssociationId != rs.Primary.ID {
 			return fmt.Errorf("Found wrong main association: %s",
-				*mainAssociation.RouteTableAssociationID)
+				*mainAssociation.RouteTableAssociationId)
 		}
 
 		return nil

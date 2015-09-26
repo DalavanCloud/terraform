@@ -7,19 +7,24 @@ import (
 
 	"github.com/hashicorp/terraform/helper/multierror"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/credentials"
-	"github.com/awslabs/aws-sdk-go/service/autoscaling"
-	"github.com/awslabs/aws-sdk-go/service/ec2"
-	"github.com/awslabs/aws-sdk-go/service/elasticache"
-	"github.com/awslabs/aws-sdk-go/service/elb"
-	"github.com/awslabs/aws-sdk-go/service/iam"
-	"github.com/awslabs/aws-sdk-go/service/kinesis"
-	"github.com/awslabs/aws-sdk-go/service/rds"
-	"github.com/awslabs/aws-sdk-go/service/route53"
-	"github.com/awslabs/aws-sdk-go/service/s3"
-	"github.com/awslabs/aws-sdk-go/service/sns"
-	"github.com/awslabs/aws-sdk-go/service/sqs"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go/service/cloudwatch"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/ecs"
+	"github.com/aws/aws-sdk-go/service/elasticache"
+	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/kinesis"
+	"github.com/aws/aws-sdk-go/service/lambda"
+	"github.com/aws/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go/service/route53"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/sns"
+	"github.com/aws/aws-sdk-go/service/sqs"
 )
 
 type Config struct {
@@ -31,10 +36,15 @@ type Config struct {
 
 	AllowedAccountIds   []interface{}
 	ForbiddenAccountIds []interface{}
+
+	DynamoDBEndpoint string
 }
 
 type AWSClient struct {
+	cloudwatchconn  *cloudwatch.CloudWatch
+	dynamodbconn    *dynamodb.DynamoDB
 	ec2conn         *ec2.EC2
+	ecsconn         *ecs.ECS
 	elbconn         *elb.ELB
 	autoscalingconn *autoscaling.AutoScaling
 	s3conn          *s3.S3
@@ -46,9 +56,10 @@ type AWSClient struct {
 	iamconn         *iam.IAM
 	kinesisconn     *kinesis.Kinesis
 	elasticacheconn *elasticache.ElastiCache
+	lambdaconn      *lambda.Lambda
 }
 
-// Client configures and returns a fully initailized AWSClient
+// Client configures and returns a fully initialized AWSClient
 func (c *Config) Client() (interface{}, error) {
 	var client AWSClient
 
@@ -68,21 +79,32 @@ func (c *Config) Client() (interface{}, error) {
 		client.region = c.Region
 
 		log.Println("[INFO] Building AWS auth structure")
-		creds := credentials.NewChainCredentials([]credentials.Provider{
-			&credentials.StaticProvider{Value: credentials.Value{
-				AccessKeyID:     c.AccessKey,
-				SecretAccessKey: c.SecretKey,
-				SessionToken:    c.Token,
-			}},
-			&credentials.EnvProvider{},
-			&credentials.SharedCredentialsProvider{Filename: "", Profile: ""},
-			&credentials.EC2RoleProvider{},
-		})
+		// We fetched all credential sources in Provider. If they are
+		// available, they'll already be in c. See Provider definition.
+		creds := credentials.NewStaticCredentials(c.AccessKey, c.SecretKey, c.Token)
 		awsConfig := &aws.Config{
 			Credentials: creds,
-			Region:      c.Region,
-			MaxRetries:  c.MaxRetries,
+			Region:      aws.String(c.Region),
+			MaxRetries:  aws.Int(c.MaxRetries),
 		}
+
+		log.Println("[INFO] Initializing IAM Connection")
+		client.iamconn = iam.New(awsConfig)
+
+		err := c.ValidateCredentials(client.iamconn)
+		if err != nil {
+			errs = append(errs, err)
+		}
+
+		awsDynamoDBConfig := &aws.Config{
+			Credentials: creds,
+			Region:      aws.String(c.Region),
+			MaxRetries:  aws.Int(c.MaxRetries),
+			Endpoint:    aws.String(c.DynamoDBEndpoint),
+		}
+
+		log.Println("[INFO] Initializing DynamoDB connection")
+		client.dynamodbconn = dynamodb.New(awsDynamoDBConfig)
 
 		log.Println("[INFO] Initializing ELB connection")
 		client.elbconn = elb.New(awsConfig)
@@ -99,15 +121,12 @@ func (c *Config) Client() (interface{}, error) {
 		log.Println("[INFO] Initializing RDS Connection")
 		client.rdsconn = rds.New(awsConfig)
 
-		log.Println("[INFO] Initializing IAM Connection")
-		client.iamconn = iam.New(awsConfig)
-
 		log.Println("[INFO] Initializing Kinesis Connection")
 		client.kinesisconn = kinesis.New(awsConfig)
 
-		err := c.ValidateAccountId(client.iamconn)
-		if err != nil {
-			errs = append(errs, err)
+		authErr := c.ValidateAccountId(client.iamconn)
+		if authErr != nil {
+			errs = append(errs, authErr)
 		}
 
 		log.Println("[INFO] Initializing AutoScaling connection")
@@ -116,18 +135,27 @@ func (c *Config) Client() (interface{}, error) {
 		log.Println("[INFO] Initializing EC2 Connection")
 		client.ec2conn = ec2.New(awsConfig)
 
+		log.Println("[INFO] Initializing ECS Connection")
+		client.ecsconn = ecs.New(awsConfig)
+
 		// aws-sdk-go uses v4 for signing requests, which requires all global
 		// endpoints to use 'us-east-1'.
 		// See http://docs.aws.amazon.com/general/latest/gr/sigv4_changes.html
 		log.Println("[INFO] Initializing Route 53 connection")
 		client.r53conn = route53.New(&aws.Config{
 			Credentials: creds,
-			Region:      "us-east-1",
-			MaxRetries:  c.MaxRetries,
+			Region:      aws.String("us-east-1"),
+			MaxRetries:  aws.Int(c.MaxRetries),
 		})
 
 		log.Println("[INFO] Initializing Elasticache Connection")
 		client.elasticacheconn = elasticache.New(awsConfig)
+
+		log.Println("[INFO] Initializing Lambda Connection")
+		client.lambdaconn = lambda.New(awsConfig)
+
+		log.Println("[INFO] Initializing CloudWatch SDK connection")
+		client.cloudwatchconn = cloudwatch.New(awsConfig)
 	}
 
 	if len(errs) > 0 {
@@ -152,6 +180,29 @@ func (c *Config) ValidateRegion() error {
 	return fmt.Errorf("Not a valid region: %s", c.Region)
 }
 
+// Validate credentials early and fail before we do any graph walking.
+// In the case of an IAM role/profile with insuffecient privileges, fail
+// silently
+func (c *Config) ValidateCredentials(iamconn *iam.IAM) error {
+	_, err := iamconn.GetUser(nil)
+
+	if awsErr, ok := err.(awserr.Error); ok {
+
+		if awsErr.Code() == "AccessDenied" || awsErr.Code() == "ValidationError" {
+			log.Printf("[WARN] AccessDenied Error with iam.GetUser, assuming IAM profile")
+			// User may be an IAM instance profile, or otherwise IAM role without the
+			// GetUser permissions, so fail silently
+			return nil
+		}
+
+		if awsErr.Code() == "SignatureDoesNotMatch" {
+			return fmt.Errorf("Failed authenticating with AWS: please verify credentials")
+		}
+	}
+
+	return err
+}
+
 // ValidateAccountId returns a context-specific error if the configured account
 // id is explicitly forbidden or not authorised; and nil if it is authorised.
 func (c *Config) ValidateAccountId(iamconn *iam.IAM) error {
@@ -162,11 +213,21 @@ func (c *Config) ValidateAccountId(iamconn *iam.IAM) error {
 	log.Printf("[INFO] Validating account ID")
 
 	out, err := iamconn.GetUser(nil)
+
 	if err != nil {
-		return fmt.Errorf("Failed getting account ID from IAM: %s", err)
+		awsErr, _ := err.(awserr.Error)
+		if awsErr.Code() == "ValidationError" {
+			log.Printf("[WARN] ValidationError with iam.GetUser, assuming its an IAM profile")
+			// User may be an IAM instance profile, so fail silently.
+			// If it is an IAM instance profile
+			// validating account might be superfluous
+		} else {
+			return fmt.Errorf("Failed getting account ID from IAM: %s", err)
+			// return error if the account id is explicitly not authorised
+		}
 	}
 
-	account_id := strings.Split(*out.User.ARN, ":")[4]
+	account_id := strings.Split(*out.User.Arn, ":")[4]
 
 	if c.ForbiddenAccountIds != nil {
 		for _, id := range c.ForbiddenAccountIds {

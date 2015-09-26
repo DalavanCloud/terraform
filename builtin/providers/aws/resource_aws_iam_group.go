@@ -3,9 +3,9 @@ package aws
 import (
 	"fmt"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam"
 
 	"github.com/hashicorp/terraform/helper/schema"
 )
@@ -81,13 +81,13 @@ func resourceAwsIamGroupReadResult(d *schema.ResourceData, group *iam.Group) err
 	if err := d.Set("name", group.GroupName); err != nil {
 		return err
 	}
-	if err := d.Set("arn", group.ARN); err != nil {
+	if err := d.Set("arn", group.Arn); err != nil {
 		return err
 	}
 	if err := d.Set("path", group.Path); err != nil {
 		return err
 	}
-	if err := d.Set("unique_id", group.GroupID); err != nil {
+	if err := d.Set("unique_id", group.GroupId); err != nil {
 		return err
 	}
 	return nil

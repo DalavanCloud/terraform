@@ -52,6 +52,12 @@ func resourceCloudStackNetwork() *schema.Resource {
 				ForceNew: true,
 			},
 
+			"project": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+			},
+
 			"zone": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
@@ -119,6 +125,17 @@ func resourceCloudStackNetworkCreate(d *schema.ResourceData, meta interface{}) e
 		}
 	}
 
+	// If there is a project supplied, we retrieve and set the project id
+	if project, ok := d.GetOk("project"); ok {
+		// Retrieve the project UUID
+		projectid, e := retrieveUUID(cs, "project", project.(string))
+		if e != nil {
+			return e.Error()
+		}
+		// Set the default project ID
+		p.SetProjectid(projectid)
+	}
+
 	// Create the new network
 	r, err := cs.Network.CreateNetwork(p)
 	if err != nil {
@@ -151,6 +168,7 @@ func resourceCloudStackNetworkRead(d *schema.ResourceData, meta interface{}) err
 	d.Set("cidr", n.Cidr)
 
 	setValueOrUUID(d, "network_offering", n.Networkofferingname, n.Networkofferingid)
+	setValueOrUUID(d, "project", n.Project, n.Projectid)
 	setValueOrUUID(d, "zone", n.Zonename, n.Zoneid)
 
 	return nil

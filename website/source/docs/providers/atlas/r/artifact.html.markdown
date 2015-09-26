@@ -24,7 +24,7 @@ to this artifact will trigger a change to that instance.
 # Read the AMI
 resource "atlas_artifact" "web" {
     name = "hashicorp/web"
-    type = "aws.ami"
+    type = "amazon.ami"
     build = "latest"
     metadata {
         arch = "386"
@@ -33,7 +33,7 @@ resource "atlas_artifact" "web" {
 
 # Start our instance with the dynamic ami value
 resource "aws_instance" "app" {
-    ami = "${atlas_artifact.web.id}"
+    ami = "${atlas_artifact.web.metadata_full.region-us-east-1}"
     ...
 }
 ```

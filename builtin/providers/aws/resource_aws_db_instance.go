@@ -3,13 +3,14 @@ package aws
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/iam"
-	"github.com/awslabs/aws-sdk-go/service/rds"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/rds"
 
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -45,6 +46,10 @@ func resourceAwsDbInstance() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				StateFunc: func(v interface{}) string {
+					value := v.(string)
+					return strings.ToLower(value)
+				},
 			},
 
 			"engine_version": &schema.Schema{
@@ -73,6 +78,26 @@ func resourceAwsDbInstance() *schema.Resource {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
+				ValidateFunc: func(v interface{}, k string) (ws []string, errors []error) {
+					value := v.(string)
+					if !regexp.MustCompile(`^[0-9a-z-]+$`).MatchString(value) {
+						errors = append(errors, fmt.Errorf(
+							"only lowercase alphanumeric characters and hyphens allowed in %q", k))
+					}
+					if !regexp.MustCompile(`^[a-z]`).MatchString(value) {
+						errors = append(errors, fmt.Errorf(
+							"first character of %q must be a letter", k))
+					}
+					if regexp.MustCompile(`--`).MatchString(value) {
+						errors = append(errors, fmt.Errorf(
+							"%q cannot contain two consecutive hyphens", k))
+					}
+					if regexp.MustCompile(`-$`).MatchString(value) {
+						errors = append(errors, fmt.Errorf(
+							"%q cannot end with a hyphen", k))
+					}
+					return
+				},
 			},
 
 			"instance_class": &schema.Schema{
@@ -114,6 +139,13 @@ func resourceAwsDbInstance() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
+				StateFunc: func(v interface{}) string {
+					if v != nil {
+						value := v.(string)
+						return strings.ToLower(value)
+					}
+					return ""
+				},
 			},
 
 			"multi_az": &schema.Schema{
@@ -153,6 +185,20 @@ func resourceAwsDbInstance() *schema.Resource {
 			"final_snapshot_identifier": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				ValidateFunc: func(v interface{}, k string) (ws []string, es []error) {
+					value := v.(string)
+					if !regexp.MustCompile(`^[0-9A-Za-z-]+$`).MatchString(value) {
+						es = append(es, fmt.Errorf(
+							"only alphanumeric characters and hyphens allowed in %q", k))
+					}
+					if regexp.MustCompile(`--`).MatchString(value) {
+						es = append(es, fmt.Errorf("%q cannot contain two consecutive hyphens", k))
+					}
+					if regexp.MustCompile(`-$`).MatchString(value) {
+						es = append(es, fmt.Errorf("%q cannot end in a hyphen", k))
+					}
+					return
+				},
 			},
 
 			"db_subnet_group_name": &schema.Schema{
@@ -203,6 +249,25 @@ func resourceAwsDbInstance() *schema.Resource {
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 
+			"snapshot_identifier": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: false,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+
+			"auto_minor_version_upgrade": &schema.Schema{
+				Type:     schema.TypeBool,
+				Computed: false,
+				Optional: true,
+			},
+
+			"allow_major_version_upgrade": &schema.Schema{
+				Type:     schema.TypeBool,
+				Computed: false,
+				Optional: true,
+			},
+
 			"tags": tagsSchema(),
 		},
 	}
@@ -220,11 +285,11 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 			Tags:                       tags,
 		}
 		if attr, ok := d.GetOk("iops"); ok {
-			opts.IOPS = aws.Long(int64(attr.(int)))
+			opts.Iops = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("port"); ok {
-			opts.Port = aws.Long(int64(attr.(int)))
+			opts.Port = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("availability_zone"); ok {
@@ -232,15 +297,75 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		}
 
 		if attr, ok := d.GetOk("publicly_accessible"); ok {
-			opts.PubliclyAccessible = aws.Boolean(attr.(bool))
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
 		}
 		_, err := conn.CreateDBInstanceReadReplica(&opts)
 		if err != nil {
 			return fmt.Errorf("Error creating DB Instance: %s", err)
 		}
+	} else if _, ok := d.GetOk("snapshot_identifier"); ok {
+		opts := rds.RestoreDBInstanceFromDBSnapshotInput{
+			DBInstanceClass:      aws.String(d.Get("instance_class").(string)),
+			DBInstanceIdentifier: aws.String(d.Get("identifier").(string)),
+			DBSnapshotIdentifier: aws.String(d.Get("snapshot_identifier").(string)),
+			Tags:                 tags,
+		}
+
+		if attr, ok := d.GetOk("auto_minor_version_upgrade"); ok {
+			opts.AutoMinorVersionUpgrade = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("availability_zone"); ok {
+			opts.AvailabilityZone = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("db_subnet_group_name"); ok {
+			opts.DBSubnetGroupName = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("engine"); ok {
+			opts.Engine = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("iops"); ok {
+			opts.Iops = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("license_model"); ok {
+			opts.LicenseModel = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("multi_az"); ok {
+			opts.MultiAZ = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("option_group_name"); ok {
+			opts.OptionGroupName = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("port"); ok {
+			opts.Port = aws.Int64(int64(attr.(int)))
+		}
+
+		if attr, ok := d.GetOk("publicly_accessible"); ok {
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
+		}
+
+		if attr, ok := d.GetOk("tde_credential_arn"); ok {
+			opts.TdeCredentialArn = aws.String(attr.(string))
+		}
+
+		if attr, ok := d.GetOk("storage_type"); ok {
+			opts.StorageType = aws.String(attr.(string))
+		}
+
+		_, err := conn.RestoreDBInstanceFromDBSnapshot(&opts)
+		if err != nil {
+			return fmt.Errorf("Error creating DB Instance: %s", err)
+		}
 	} else {
 		opts := rds.CreateDBInstanceInput{
-			AllocatedStorage:     aws.Long(int64(d.Get("allocated_storage").(int))),
+			AllocatedStorage:     aws.Int64(int64(d.Get("allocated_storage").(int))),
 			DBName:               aws.String(d.Get("name").(string)),
 			DBInstanceClass:      aws.String(d.Get("instance_class").(string)),
 			DBInstanceIdentifier: aws.String(d.Get("identifier").(string)),
@@ -248,14 +373,14 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 			MasterUserPassword:   aws.String(d.Get("password").(string)),
 			Engine:               aws.String(d.Get("engine").(string)),
 			EngineVersion:        aws.String(d.Get("engine_version").(string)),
-			StorageEncrypted:     aws.Boolean(d.Get("storage_encrypted").(bool)),
+			StorageEncrypted:     aws.Bool(d.Get("storage_encrypted").(bool)),
 			Tags:                 tags,
 		}
 
 		attr := d.Get("backup_retention_period")
-		opts.BackupRetentionPeriod = aws.Long(int64(attr.(int)))
+		opts.BackupRetentionPeriod = aws.Int64(int64(attr.(int)))
 		if attr, ok := d.GetOk("multi_az"); ok {
-			opts.MultiAZ = aws.Boolean(attr.(bool))
+			opts.MultiAZ = aws.Bool(attr.(bool))
 		}
 
 		if attr, ok := d.GetOk("maintenance_window"); ok {
@@ -278,7 +403,7 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 			for _, v := range attr.List() {
 				s = append(s, aws.String(v.(string)))
 			}
-			opts.VPCSecurityGroupIDs = s
+			opts.VpcSecurityGroupIds = s
 		}
 
 		if attr := d.Get("security_group_names").(*schema.Set); attr.Len() > 0 {
@@ -297,11 +422,11 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		}
 
 		if attr, ok := d.GetOk("iops"); ok {
-			opts.IOPS = aws.Long(int64(attr.(int)))
+			opts.Iops = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("port"); ok {
-			opts.Port = aws.Long(int64(attr.(int)))
+			opts.Port = aws.Int64(int64(attr.(int)))
 		}
 
 		if attr, ok := d.GetOk("availability_zone"); ok {
@@ -309,7 +434,7 @@ func resourceAwsDbInstanceCreate(d *schema.ResourceData, meta interface{}) error
 		}
 
 		if attr, ok := d.GetOk("publicly_accessible"); ok {
-			opts.PubliclyAccessible = aws.Boolean(attr.(bool))
+			opts.PubliclyAccessible = aws.Bool(attr.(bool))
 		}
 
 		log.Printf("[DEBUG] DB Instance create configuration: %#v", opts)
@@ -407,7 +532,7 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 		})
 
 		if err != nil {
-			log.Printf("[DEBUG] Error retreiving tags for ARN: %s", arn)
+			log.Printf("[DEBUG] Error retrieving tags for ARN: %s", arn)
 		}
 
 		var dt []*rds.Tag
@@ -421,8 +546,8 @@ func resourceAwsDbInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	ids := &schema.Set{
 		F: schema.HashString,
 	}
-	for _, v := range v.VPCSecurityGroups {
-		ids.Add(*v.VPCSecurityGroupID)
+	for _, v := range v.VpcSecurityGroups {
+		ids.Add(*v.VpcSecurityGroupId)
 	}
 	d.Set("vpc_security_group_ids", ids)
 
@@ -459,7 +584,7 @@ func resourceAwsDbInstanceDelete(d *schema.ResourceData, meta interface{}) error
 
 	finalSnapshot := d.Get("final_snapshot_identifier").(string)
 	if finalSnapshot == "" {
-		opts.SkipFinalSnapshot = aws.Boolean(true)
+		opts.SkipFinalSnapshot = aws.Bool(true)
 	} else {
 		opts.FinalDBSnapshotIdentifier = aws.String(finalSnapshot)
 	}
@@ -493,7 +618,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	d.Partial(true)
 
 	req := &rds.ModifyDBInstanceInput{
-		ApplyImmediately:     aws.Boolean(d.Get("apply_immediately").(bool)),
+		ApplyImmediately:     aws.Bool(d.Get("apply_immediately").(bool)),
 		DBInstanceIdentifier: aws.String(d.Id()),
 	}
 	d.SetPartial("apply_immediately")
@@ -501,12 +626,17 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	requestUpdate := false
 	if d.HasChange("allocated_storage") {
 		d.SetPartial("allocated_storage")
-		req.AllocatedStorage = aws.Long(int64(d.Get("allocated_storage").(int)))
+		req.AllocatedStorage = aws.Int64(int64(d.Get("allocated_storage").(int)))
+		requestUpdate = true
+	}
+	if d.HasChange("allow_major_version_upgrade") {
+		d.SetPartial("allow_major_version_upgrade")
+		req.AllowMajorVersionUpgrade = aws.Bool(d.Get("allow_major_version_upgrade").(bool))
 		requestUpdate = true
 	}
 	if d.HasChange("backup_retention_period") {
 		d.SetPartial("backup_retention_period")
-		req.BackupRetentionPeriod = aws.Long(int64(d.Get("backup_retention_period").(int)))
+		req.BackupRetentionPeriod = aws.Int64(int64(d.Get("backup_retention_period").(int)))
 		requestUpdate = true
 	}
 	if d.HasChange("instance_class") {
@@ -526,7 +656,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	}
 	if d.HasChange("iops") {
 		d.SetPartial("iops")
-		req.IOPS = aws.Long(int64(d.Get("iops").(int)))
+		req.Iops = aws.Int64(int64(d.Get("iops").(int)))
 		requestUpdate = true
 	}
 	if d.HasChange("backup_window") {
@@ -546,7 +676,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 	}
 	if d.HasChange("multi_az") {
 		d.SetPartial("multi_az")
-		req.MultiAZ = aws.Boolean(d.Get("multi_az").(bool))
+		req.MultiAZ = aws.Bool(d.Get("multi_az").(bool))
 		requestUpdate = true
 	}
 	if d.HasChange("storage_type") {
@@ -561,7 +691,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 			for _, v := range attr.List() {
 				s = append(s, aws.String(v.(string)))
 			}
-			req.VPCSecurityGroupIDs = s
+			req.VpcSecurityGroupIds = s
 		}
 		requestUpdate = true
 	}
@@ -586,7 +716,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 		}
 	}
 
-	// seperate request to promote a database
+	// separate request to promote a database
 	if d.HasChange("replicate_source_db") {
 		if d.Get("replicate_source_db").(string) == "" {
 			// promote
@@ -594,7 +724,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 				DBInstanceIdentifier: aws.String(d.Id()),
 			}
 			attr := d.Get("backup_retention_period")
-			opts.BackupRetentionPeriod = aws.Long(int64(attr.(int)))
+			opts.BackupRetentionPeriod = aws.Int64(int64(attr.(int)))
 			if attr, ok := d.GetOk("backup_window"); ok {
 				opts.PreferredBackupWindow = aws.String(attr.(string))
 			}
@@ -616,6 +746,7 @@ func resourceAwsDbInstanceUpdate(d *schema.ResourceData, meta interface{}) error
 		}
 	}
 	d.Partial(false)
+
 	return resourceAwsDbInstanceRead(d, meta)
 }
 
@@ -630,7 +761,6 @@ func resourceAwsDbInstanceRetrieve(
 	log.Printf("[DEBUG] DB Instance describe configuration: %#v", opts)
 
 	resp, err := conn.DescribeDBInstances(&opts)
-
 	if err != nil {
 		dbinstanceerr, ok := err.(awserr.Error)
 		if ok && dbinstanceerr.Code() == "DBInstanceNotFound" {
@@ -679,7 +809,7 @@ func buildRDSARN(d *schema.ResourceData, meta interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	userARN := *resp.User.ARN
+	userARN := *resp.User.Arn
 	accountID := strings.Split(userARN, ":")[4]
 	arn := fmt.Sprintf("arn:aws:rds:%s:%s:db:%s", region, accountID, d.Id())
 	return arn, nil

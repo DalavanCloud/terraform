@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func TestAccAWSEBSVolume(t *testing.T) {
+func TestAccAWSEBSVolume_basic(t *testing.T) {
 	var v ec2.Volume
 	resource.Test(t, resource.TestCase{
 		PreCheck:  func() { testAccPreCheck(t) },
@@ -56,7 +56,7 @@ func testAccCheckVolumeExists(n string, v *ec2.Volume) resource.TestCheckFunc {
 		conn := testAccProvider.Meta().(*AWSClient).ec2conn
 
 		request := &ec2.DescribeVolumesInput{
-			VolumeIDs: []*string{aws.String(rs.Primary.ID)},
+			VolumeIds: []*string{aws.String(rs.Primary.ID)},
 		}
 
 		response, err := conn.DescribeVolumes(request)

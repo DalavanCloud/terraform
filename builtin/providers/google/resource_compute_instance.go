@@ -3,7 +3,6 @@ package google
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -101,7 +100,7 @@ func resourceComputeInstance() *schema.Resource {
 						},
 
 						"device_name": &schema.Schema{
-							Type: schema.TypeString,
+							Type:     schema.TypeString,
 							Optional: true,
 						},
 					},
@@ -148,9 +147,9 @@ func resourceComputeInstance() *schema.Resource {
 			},
 
 			"network": &schema.Schema{
-				Type:     schema.TypeList,
-				Optional: true,
-				ForceNew: true,
+				Type:       schema.TypeList,
+				Optional:   true,
+				ForceNew:   true,
 				Deprecated: "Please use network_interface",
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
@@ -188,6 +187,12 @@ func resourceComputeInstance() *schema.Resource {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Default:  false,
+				ForceNew: true,
+			},
+
+			"metadata_startup_script": &schema.Schema{
+				Type:     schema.TypeString,
+				Optional: true,
 				ForceNew: true,
 			},
 
@@ -229,7 +234,7 @@ func resourceComputeInstance() *schema.Resource {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
-				Set: stringHashcode,
+				Set:      stringHashcode,
 			},
 
 			"metadata_fingerprint": &schema.Schema{
@@ -250,30 +255,21 @@ func resourceComputeInstance() *schema.Resource {
 	}
 }
 
-func resourceOperationWaitZone(
-	config *Config, op *compute.Operation, zone string, activity string) error {
-
-	w := &OperationWaiter{
-		Service: config.clientCompute,
-		Op:      op,
-		Project: config.Project,
-		Zone:    zone,
-		Type:    OperationWaitZone,
-	}
-	state := w.Conf()
-	state.Delay = 10 * time.Second
-	state.Timeout = 10 * time.Minute
-	state.MinTimeout = 2 * time.Second
-	opRaw, err := state.WaitForState()
+func getInstance(config *Config, d *schema.ResourceData) (*compute.Instance, error) {
+	instance, err := config.clientCompute.Instances.Get(
+		config.Project, d.Get("zone").(string), d.Id()).Do()
 	if err != nil {
-		return fmt.Errorf("Error waiting for %s: %s", activity, err)
+		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
+			// The resource doesn't exist anymore
+			d.SetId("")
+
+			return nil, fmt.Errorf("Resource %s no longer exists", config.Project)
+		}
+
+		return nil, fmt.Errorf("Error reading instance: %s", err)
 	}
-	op = opRaw.(*compute.Operation)
-	if op.Error != nil {
-		// Return the error
-		return OperationError(*op.Error)
-	}
-	return nil
+
+	return instance, nil
 }
 
 func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) error {
@@ -327,7 +323,7 @@ func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) err
 			disk.Source = diskData.SelfLink
 		} else {
 			// Create a new disk
-			disk.InitializeParams = &compute.AttachedDiskInitializeParams{ }
+			disk.InitializeParams = &compute.AttachedDiskInitializeParams{}
 		}
 
 		if v, ok := d.GetOk(prefix + ".scratch"); ok {
@@ -367,7 +363,7 @@ func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) err
 			disk.InitializeParams.DiskSizeGb = int64(diskSizeGb)
 		}
 
-		if v, ok := d.GetOk(prefix  + ".device_name"); ok {
+		if v, ok := d.GetOk(prefix + ".device_name"); ok {
 			disk.DeviceName = v.(string)
 		}
 
@@ -469,13 +465,18 @@ func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) err
 		serviceAccounts = append(serviceAccounts, serviceAccount)
 	}
 
+	metadata, err := resourceInstanceMetadata(d)
+	if err != nil {
+		return fmt.Errorf("Error creating metadata: %s", err)
+	}
+
 	// Create the instance information
 	instance := compute.Instance{
 		CanIpForward:      d.Get("can_ip_forward").(bool),
 		Description:       d.Get("description").(string),
 		Disks:             disks,
 		MachineType:       machineType.SelfLink,
-		Metadata:          resourceInstanceMetadata(d),
+		Metadata:          metadata,
 		Name:              d.Get("name").(string),
 		NetworkInterfaces: networkInterfaces,
 		Tags:              resourceInstanceTags(d),
@@ -493,7 +494,7 @@ func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) err
 	d.SetId(instance.Name)
 
 	// Wait for the operation to complete
-	waitErr := resourceOperationWaitZone(config, op, zone.Name, "instance to create")
+	waitErr := computeOperationWaitZone(config, op, zone.Name, "instance to create")
 	if waitErr != nil {
 		// The resource didn't actually create
 		d.SetId("")
@@ -506,17 +507,16 @@ func resourceComputeInstanceCreate(d *schema.ResourceData, meta interface{}) err
 func resourceComputeInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	instance, err := config.clientCompute.Instances.Get(
-		config.Project, d.Get("zone").(string), d.Id()).Do()
+	instance, err := getInstance(config, d);
 	if err != nil {
-		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
-			// The resource doesn't exist anymore
-			d.SetId("")
+		return err
+	}
 
-			return nil
-		}
+	// Synch metadata 
+	md := instance.Metadata
 
-		return fmt.Errorf("Error reading instance: %s", err)
+	if err = d.Set("metadata", MetadataFormatSchema(md)); err != nil {
+		return fmt.Errorf("Error setting metadata: %s", err)
 	}
 
 	d.Set("can_ip_forward", instance.CanIpForward)
@@ -644,17 +644,9 @@ func resourceComputeInstanceUpdate(d *schema.ResourceData, meta interface{}) err
 
 	zone := d.Get("zone").(string)
 
-	instance, err := config.clientCompute.Instances.Get(
-		config.Project, zone, d.Id()).Do()
+	instance, err := getInstance(config, d);
 	if err != nil {
-		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 {
-			// The resource doesn't exist anymore
-			d.SetId("")
-
-			return nil
-		}
-
-		return fmt.Errorf("Error reading instance: %s", err)
+		return err
 	}
 
 	// Enable partial mode for the resource since it is possible
@@ -662,20 +654,38 @@ func resourceComputeInstanceUpdate(d *schema.ResourceData, meta interface{}) err
 
 	// If the Metadata has changed, then update that.
 	if d.HasChange("metadata") {
-		metadata := resourceInstanceMetadata(d)
-		op, err := config.clientCompute.Instances.SetMetadata(
-			config.Project, zone, d.Id(), metadata).Do()
-		if err != nil {
-			return fmt.Errorf("Error updating metadata: %s", err)
+		o, n := d.GetChange("metadata")
+
+		updateMD := func() error {
+			// Reload the instance in the case of a fingerprint mismatch
+			instance, err = getInstance(config, d);
+			if err != nil {
+				return err
+			}
+
+			md := instance.Metadata
+
+			MetadataUpdate(o.(map[string]interface{}), n.(map[string]interface{}), md)
+
+			if err != nil {
+				return fmt.Errorf("Error updating metadata: %s", err)
+			}
+			op, err := config.clientCompute.Instances.SetMetadata(
+				config.Project, zone, d.Id(), md).Do()
+			if err != nil {
+				return fmt.Errorf("Error updating metadata: %s", err)
+			}
+
+			opErr := computeOperationWaitZone(config, op, zone, "metadata to update")
+			if opErr != nil {
+				return opErr
+			}
+
+			d.SetPartial("metadata")
+			return nil
 		}
 
-		// 1 5 2
-		opErr := resourceOperationWaitZone(config, op, zone, "metadata to update")
-		if opErr != nil {
-			return opErr
-		}
-
-		d.SetPartial("metadata")
+		MetadataRetryWrapper(updateMD)
 	}
 
 	if d.HasChange("tags") {
@@ -686,7 +696,7 @@ func resourceComputeInstanceUpdate(d *schema.ResourceData, meta interface{}) err
 			return fmt.Errorf("Error updating tags: %s", err)
 		}
 
-		opErr := resourceOperationWaitZone(config, op, zone, "tags to update")
+		opErr := computeOperationWaitZone(config, op, zone, "tags to update")
 		if opErr != nil {
 			return opErr
 		}
@@ -727,7 +737,7 @@ func resourceComputeInstanceUpdate(d *schema.ResourceData, meta interface{}) err
 					if err != nil {
 						return fmt.Errorf("Error deleting old access_config: %s", err)
 					}
-					opErr := resourceOperationWaitZone(config, op, zone, "old access_config to delete")
+					opErr := computeOperationWaitZone(config, op, zone, "old access_config to delete")
 					if opErr != nil {
 						return opErr
 					}
@@ -746,7 +756,7 @@ func resourceComputeInstanceUpdate(d *schema.ResourceData, meta interface{}) err
 					if err != nil {
 						return fmt.Errorf("Error adding new access_config: %s", err)
 					}
-					opErr := resourceOperationWaitZone(config, op, zone, "new access_config to add")
+					opErr := computeOperationWaitZone(config, op, zone, "new access_config to add")
 					if opErr != nil {
 						return opErr
 					}
@@ -772,7 +782,7 @@ func resourceComputeInstanceDelete(d *schema.ResourceData, meta interface{}) err
 	}
 
 	// Wait for the operation to complete
-	opErr := resourceOperationWaitZone(config, op, zone, "instance to delete")
+	opErr := computeOperationWaitZone(config, op, zone, "instance to delete")
 	if opErr != nil {
 		return opErr
 	}
@@ -781,14 +791,24 @@ func resourceComputeInstanceDelete(d *schema.ResourceData, meta interface{}) err
 	return nil
 }
 
-func resourceInstanceMetadata(d *schema.ResourceData) *compute.Metadata {
+func resourceInstanceMetadata(d *schema.ResourceData) (*compute.Metadata, error) {
 	m := &compute.Metadata{}
-	if mdMap := d.Get("metadata").(map[string]interface{}); len(mdMap) > 0 {
+	mdMap := d.Get("metadata").(map[string]interface{})
+	_, mapScriptExists := mdMap["startup-script"]
+	dScript, dScriptExists := d.GetOk("metadata_startup_script")
+	if mapScriptExists && dScriptExists {
+		return nil, fmt.Errorf("Not allowed to have both metadata_startup_script and metadata.startup-script")
+	}
+	if dScriptExists {
+		mdMap["startup-script"] = dScript
+	}
+	if len(mdMap) > 0 {
 		m.Items = make([]*compute.MetadataItems, 0, len(mdMap))
 		for key, val := range mdMap {
+			v := val.(string)
 			m.Items = append(m.Items, &compute.MetadataItems{
 				Key:   key,
-				Value: val.(string),
+				Value: &v,
 			})
 		}
 
@@ -797,7 +817,7 @@ func resourceInstanceMetadata(d *schema.ResourceData) *compute.Metadata {
 		m.Fingerprint = d.Get("metadata_fingerprint").(string)
 	}
 
-	return m
+	return m, nil
 }
 
 func resourceInstanceTags(d *schema.ResourceData) *compute.Tags {

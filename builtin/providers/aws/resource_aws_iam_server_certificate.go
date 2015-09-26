@@ -4,11 +4,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/hashicorp/terraform/helper/schema"
 )
 
@@ -27,14 +28,16 @@ func resourceAwsIAMServerCertificate() *schema.Resource {
 			},
 
 			"certificate_chain": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
+				Type:      schema.TypeString,
+				Optional:  true,
+				ForceNew:  true,
+				StateFunc: normalizeCert,
 			},
 
 			"path": &schema.Schema{
-				Type:     schema.TypeBool,
+				Type:     schema.TypeString,
 				Optional: true,
+				Default:  "/",
 				ForceNew: true,
 			},
 
@@ -73,10 +76,11 @@ func resourceAwsIAMServerCertificateCreate(d *schema.ResourceData, meta interfac
 		createOpts.CertificateChain = aws.String(v.(string))
 	}
 
-	if v, ok := d.GetOk("Path"); ok {
+	if v, ok := d.GetOk("path"); ok {
 		createOpts.Path = aws.String(v.(string))
 	}
 
+	log.Printf("[DEBUG] Creating IAM Server Certificate with opts: %s", createOpts)
 	resp, err := conn.UploadServerCertificate(createOpts)
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
@@ -85,7 +89,7 @@ func resourceAwsIAMServerCertificateCreate(d *schema.ResourceData, meta interfac
 		return fmt.Errorf("[WARN] Error uploading server certificate, error: %s", err)
 	}
 
-	d.SetId(*resp.ServerCertificateMetadata.ServerCertificateID)
+	d.SetId(*resp.ServerCertificateMetadata.ServerCertificateId)
 
 	return resourceAwsIAMServerCertificateRead(d, meta)
 }
@@ -106,9 +110,14 @@ func resourceAwsIAMServerCertificateRead(d *schema.ResourceData, meta interface{
 	// these values should always be present, and have a default if not set in
 	// configuration, and so safe to reference with nil checks
 	d.Set("certificate_body", normalizeCert(resp.ServerCertificate.CertificateBody))
-	d.Set("certificate_chain", resp.ServerCertificate.CertificateChain)
+
+	c := normalizeCert(resp.ServerCertificate.CertificateChain)
+	if c != "" {
+		d.Set("certificate_chain", c)
+	}
+
 	d.Set("path", resp.ServerCertificate.ServerCertificateMetadata.Path)
-	d.Set("arn", resp.ServerCertificate.ServerCertificateMetadata.ARN)
+	d.Set("arn", resp.ServerCertificate.ServerCertificateMetadata.Arn)
 
 	return nil
 }
@@ -131,9 +140,10 @@ func resourceAwsIAMServerCertificateDelete(d *schema.ResourceData, meta interfac
 }
 
 func normalizeCert(cert interface{}) string {
-	if cert == nil {
+	if cert == nil || cert == (*string)(nil) {
 		return ""
 	}
+
 	switch cert.(type) {
 	case string:
 		hash := sha1.Sum([]byte(strings.TrimSpace(cert.(string))))

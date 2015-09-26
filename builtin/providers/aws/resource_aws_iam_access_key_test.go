@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/awslabs/aws-sdk-go/aws"
-	"github.com/awslabs/aws-sdk-go/aws/awserr"
-	"github.com/awslabs/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func TestAccAWSAccessKey_normal(t *testing.T) {
+func TestAccAWSAccessKey_basic(t *testing.T) {
 	var conf iam.AccessKeyMetadata
 
 	resource.Test(t, resource.TestCase{
@@ -116,3 +116,20 @@ resource "aws_iam_access_key" "a_key" {
 	user = "${aws_iam_user.a_user.name}"
 }
 `
+
+func TestSesSmtpPasswordFromSecretKey(t *testing.T) {
+	cases := []struct {
+		Input    string
+		Expected string
+	}{
+		{"some+secret+key", "AnkqhOiWEcszZZzTMCQbOY1sPGoLFgMH9zhp4eNgSjo4"},
+		{"another+secret+key", "Akwqr0Giwi8FsQFgW3DXWCC2DiiQ/jZjqLDWK8TeTBgL"},
+	}
+
+	for _, tc := range cases {
+		actual := sesSmtpPasswordFromSecretKey(&tc.Input)
+		if actual != tc.Expected {
+			t.Fatalf("%q: expected %q, got %q", tc.Input, tc.Expected, actual)
+		}
+	}
+}
