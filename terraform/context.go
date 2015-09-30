@@ -513,3 +513,7 @@ func (c *Context) walk(
 	walker := &ContextGraphWalker{Context: c, Operation: operation}
 	return walker, graph.Walk(walker)
 }
+
+func (c *Context) UpdateState(s *State) {
+	c.state = s
+}
